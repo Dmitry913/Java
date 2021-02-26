@@ -1,7 +1,7 @@
 import java.util.Arrays;
 import java.util.Scanner;
 
-public class Main {
+public class TicTacToe {
     public static void main(String[] args) {
         char[] field = new char[9];
         Arrays.fill(field, '_');
