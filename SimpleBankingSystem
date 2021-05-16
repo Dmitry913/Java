@@ -1,0 +1,371 @@
+package banking;
+
+import org.sqlite.SQLiteDataSource;
+
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Random;
+import java.util.Scanner;
+
+public class SimpleBankingSystem {
+    public static void main(String[] args) {
+        // подключение БД
+        String url = "jdbc:sqlite:" + args[1];
+        SQLiteDataSource dataSource = new SQLiteDataSource();
+        dataSource.setUrl(url);
+        try (Connection connection = dataSource.getConnection()) {
+            if (!connection.isValid(5)) {
+                System.out.println("Connection isn't valid");
+            } else {
+                System.out.println("Connection is valid");
+                try (Statement statement = connection.createStatement()) {
+                    System.out.println("success");
+                    statement.executeUpdate("CREATE TABLE IF NOT EXISTS card(" +
+                            "id INTEGER," +
+                            "number TEXT," +
+                            "pin TEXT," +
+                            "balance INTEGER DEFAULT 0)");
+                    BankingSystem.startProgram(statement, connection);
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+    }
+}
+
+class BankingSystem {
+    public enum State {
+        TERMINAL, LOGIN, CONFIRMED, TRANSFER, REPLENISHMENT, EXIT
+    }
+
+    private State state;
+    private Card userNow;
+    private Statement statement;
+    private Connection connection;
+    private int lastIdBD;
+
+    public BankingSystem(Statement statement, Connection connection) {
+        state = State.TERMINAL;
+        this.statement = statement;
+        this.connection = connection;
+        this.lastIdBD = getLastId();
+    }
+
+    public void processInput(String input) {
+        switch (state) {
+            case TERMINAL:
+                switch (input) {
+                    case "1":
+                        pushCard();
+                        break;
+                    case "2":
+                        state = State.LOGIN;
+                        break;
+                    case "0":
+                        state = State.EXIT;
+                        break;
+                }
+                break;
+            case LOGIN:
+                if (logIn(input.split(" ")[0], input.split(" ")[1])) {
+                    state = State.CONFIRMED;
+                    System.out.println("You have successfully logged in!");
+                } else {
+                    state = State.TERMINAL;
+                    System.out.println("Wrong card number or PIN!");
+                }
+                break;
+            case CONFIRMED:
+                switch (input) {
+                    case "1":
+                        System.out.println(userNow.getBalance());
+                        break;
+                    case "2":
+                        state = State.REPLENISHMENT;
+                        System.out.println("Enter income:");
+                        break;
+                    case "3":
+                        System.out.println("Transfer\n" +
+                                "Enter card number:");
+                        state = State.TRANSFER;
+                        break;
+                    case "4":
+                        deleteFromBD();
+                        userNow = null;
+                        state = State.TERMINAL;
+                        System.out.println("The account has been closed!");
+                        break;
+                    case "5":
+                        userNow = null;
+                        state = State.TERMINAL;
+                        System.out.println("You have successfully logged out!");
+                        break;
+                    case "0":
+                        userNow = null;
+                        state = State.EXIT;
+                        System.out.println("Bye!");
+                        break;
+                }
+                break;
+            case REPLENISHMENT:
+                addIncome(Long.parseLong(input));
+                System.out.println("Income was added!");
+                state = State.CONFIRMED;
+                break;
+            case TRANSFER:
+                doTransfer(input.substring(0, input.indexOf(':')), input.substring(input.indexOf(':') + 1));
+                state = State.CONFIRMED;
+                break;
+        }
+    }
+
+    private void pushCard() {
+        StringBuilder builder = new StringBuilder("400000");
+        Random random = new Random();
+        for (int i = 0; i < 9; i++) {
+            builder.append(random.nextInt(10));
+        }
+        builder.append(getLuhnDigit(builder.toString()));
+        String numberCard = builder.toString();
+        builder = new StringBuilder();
+        for (int i = 0; i < 4; i++) {
+            builder.append(random.nextInt(10));
+        }
+        System.out.println("Your card has been created");
+        System.out.println("Your card number:");
+        System.out.println(numberCard);
+        System.out.println("Your card PIN:");
+        System.out.println(builder);
+        putBD(new Card(numberCard, builder.toString()));
+    }
+
+
+    private int getLastId() {
+        try (ResultSet cards = statement.executeQuery("SELECT * FROM card")) {
+            int id = -1;
+            while (cards.next()) {
+                id = cards.getInt("id");
+            }
+            return id;
+        } catch (SQLException e) {
+            System.out.println("Not found last id");
+            return -1;
+        }
+    }
+
+    private void putBD(Card card) {
+        try {
+            statement.executeUpdate("INSERT INTO card VALUES " +
+                    "(" + Integer.toString(++lastIdBD) +
+                    ", \'" + card.getNumCard() + "\', " +
+                    "\'" + card.getPinCode() + "\'," +
+                    Long.toString(card.getBalance()) + ")");
+        } catch (SQLException e) {
+            System.out.println("failed insert in BD");
+        }
+    }
+
+    private boolean logIn(String number, String pin) {
+        try (ResultSet cards = statement.executeQuery("SELECT * FROM card WHERE number = \'" + number + "\'")) {
+            int id = -1;
+            String pincode = "";
+            int balance;
+            while (cards.next()) {
+                id = cards.getInt("id");
+                pincode = cards.getString("pin");
+                balance = cards.getInt("balance");
+            }
+            if (id != -1) {
+                if (pincode.equals(pin)) {
+                    userNow = new Card(number, pincode, id);
+                    return true;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        } catch (SQLException e) {
+            System.out.println("failed get information from BD");
+            return false;
+        }
+    }
+
+    private void deleteFromBD() {
+        try {
+            statement.executeUpdate("DELETE FROM card WHERE number = \'" + userNow.getNumCard() + "\';");
+        } catch (SQLException e) {
+            System.out.println("Failed delete from BD");
+        }
+    }
+
+    private void addIncome(long sum) {
+        try {
+            System.out.println("Update rows: " + statement.executeUpdate("UPDATE card SET balance = balance + " + Long.toString(sum) +
+                    " WHERE id = " + Integer.toString(userNow.idBD) + ";"));
+        } catch (SQLException e) {
+            System.out.println("Failed addIncome in BD");
+        }
+    }
+
+    private boolean isValidCardForTransfer(String input) {
+        if (!isValidSum(input)) {
+            System.out.println("Probably you made a mistake in the card number. Please try again!");
+            return false;
+        }
+        if (input.equals(userNow.getNumCard())) {
+            System.out.println("You can't transfer money to the same account!");
+            return false;
+        }
+        
+        try {
+            ResultSet cards = statement.executeQuery("SELECT * FROM card WHERE number = \'" + input + "\';");
+            int id = -1;
+            while (cards.next()) {
+                id = cards.getInt("id");
+                cards.getString("pin");
+                cards.getInt("balance");
+            }
+            if (id >= 0) {
+                return true;
+            } else {
+                System.out.println("Such a card does not exist.");
+                return false;
+            }
+        } catch (SQLException e) {
+            System.out.println("failed select in BD");
+            return false;
+        }
+    }
+
+    private void doTransfer(String number, String sum) {
+        try {
+            connection.setAutoCommit(false);
+            statement = connection.createStatement();
+            
+            statement.executeUpdate("UPDATE card SET balance = balance - " + sum + " WHERE id = " + userNow.idBD + ";");
+            statement.executeUpdate("UPDATE card SET balance = balance + " + sum + " WHERE number = \'" + number + "\';");
+            
+            connection.commit();
+            System.out.println("Success!");
+        } catch (SQLException e) {
+            System.out.println("Not enough money!");
+            try {
+                connection.rollback();
+            } catch (SQLException throwables) {
+                throwables.printStackTrace();
+            }
+        }
+    }
+
+
+    public State getState() {
+        return state;
+    }
+
+    private boolean isValidSum(String numberCard) {
+        int controlSum = getLuhnDigit(numberCard.substring(0, numberCard.length() - 1));
+        return ((numberCard.charAt(numberCard.length() - 1) - '0') == controlSum);
+    }
+
+    private int getLuhnDigit(String numberCard) {
+        int sum = 0;
+        for (int i = 0; i < numberCard.length(); i++) {
+            int digit = numberCard.charAt(i) - '0';
+            if (i % 2 == 0) {
+                digit *= 2;
+            }
+            if (digit > 9) {
+                digit -= 9;
+            }
+            sum += digit;
+        }
+        int result = 10 - sum % 10;
+        return (result == 10) ? 0 : result;
+    }
+
+    public static void startProgram(Statement statement, Connection connection) {
+        Scanner scanner = new Scanner(System.in);
+        BankingSystem bank = new BankingSystem(statement, connection);
+        while (true) {
+            switch (bank.getState()) {
+                case TERMINAL:
+                    System.out.println("1. Create an account\n" +
+                            "2. Log into account\n" +
+                            "0. Exit");
+                    bank.processInput(scanner.next());
+                    break;
+                case LOGIN:
+                    System.out.println("Enter your card number:");
+                    String number = scanner.next();
+                    System.out.println("Enter your PIN:");
+                    String pin = scanner.next();
+                    bank.processInput(number + " " + pin);
+                case CONFIRMED:
+                    System.out.println("1. Balance\n" +
+                            "2. Add income\n" +
+                            "3. Do transfer\n" +
+                            "4. Close account\n" +
+                            "5. Log out\n" +
+                            "0. Exit");
+                    bank.processInput(scanner.next());
+                    break;
+                case REPLENISHMENT:
+                    bank.processInput(scanner.next());
+                    break;
+                case TRANSFER:
+                    String cardNum = scanner.next();
+                    if (!bank.isValidCardForTransfer(cardNum)) {
+                        bank.state = State.CONFIRMED;
+                    } else {
+                        System.out.println("Enter how much money you want to transfer:");
+                        bank.processInput(cardNum + ":" + scanner.next());
+                    }
+                    break;
+                case EXIT:
+                    System.out.println("Bye!");
+                    return;
+            }
+        }
+    }
+}
+
+class Card {
+    private String numCard;
+    private String pinCode;
+    private long balance;
+    int idBD;
+
+    public Card(String numCard, String pinCode) {
+        this.numCard = numCard;
+        this.pinCode = pinCode;
+    }
+
+    public Card(String numCard, String pinCode, int id) {
+        this(numCard, pinCode);
+        this.idBD = id;
+    }
+
+
+    public boolean checkPin(String pin) {
+        return pinCode.equals(pin);
+    }
+
+    public String getNumCard() {
+        return numCard;
+    }
+
+    public String getPinCode() {
+        return pinCode;
+    }
+
+    public long getBalance() {
+        return balance;
+    }
+}
